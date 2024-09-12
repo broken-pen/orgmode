@@ -1,3 +1,6 @@
+# Benchmark results
+*.tsv
+
 # Compiled Lua sources
 luac.out
 
