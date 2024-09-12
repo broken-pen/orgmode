@@ -7,6 +7,7 @@ local Listitem = require('orgmode.files.elements.listitem')
 
 ---@class OrgFilesOpts
 ---@field paths string | string[]
+---@field _experimental_org_files_throttle? integer
 
 ---@class OrgLoadFileOpts
 ---@field persist boolean Persist the file in the list of loaded files if it belongs to path
@@ -16,6 +17,7 @@ local Listitem = require('orgmode.files.elements.listitem')
 ---@field files table<string, OrgFile> table with files that are part of paths
 ---@field all_files table<string, OrgFile> all loaded files, no matter if they are part of paths
 ---@field load_state 'loading' | 'loaded' | nil
+---@field _experimental_org_files_throttle? integer
 local OrgFiles = {}
 OrgFiles.__index = OrgFiles
 
@@ -25,10 +27,87 @@ function OrgFiles:new(opts)
     files = {},
     all_files = {},
     load_state = nil,
+    _experimental_org_files_throttle = opts._experimental_org_files_throttle,
   }
   setmetatable(data, self)
   data.paths = self:_setup_paths(opts.paths)
   return data
+end
+
+---@param num_workers? integer
+---@param mapper fun(string): OrgPromise<OrgFile|false>
+---@param inputs string[]
+---@return OrgPromise<(OrgFile|false)[]>
+local function throttled_map(num_workers, mapper, inputs)
+  num_workers = num_workers or #inputs
+
+  ---Index of the next input to process. Increased after every successful read,
+  ---so eventually it exceeds `#inputs`.
+  local queue_ptr = 1
+
+  ---Container for our outputs. Every time `inputs[i]` is processed, we write
+  ---the result to `outputs[i]`. The nil assignment reserves enough capacity
+  ---for the table to hold all its items.
+  ---@type (OrgFile|false)[]
+  local outputs = { [#inputs] = nil }
+
+  ---Grab the next input (increasing the queue pointer). If no inputs are left,
+  ---return `nil` immediately. Otherwise, schedule a promise that writes the
+  ---result of `mapper(input)` to `outputs` at the correct position.
+  ---@return OrgPromise<nil>|nil
+  local function step()
+    if inputs[queue_ptr] then
+      local this_ptr = queue_ptr
+      queue_ptr = queue_ptr + 1
+      return Promise.resolve(inputs[this_ptr])
+          :next(mapper)
+          :next(function(orgfile)
+            outputs[this_ptr] = orgfile
+          end)
+    end
+  end
+
+  ---Worker pool. Starts out with `num_workers` promises, but shrinks towards
+  ---the end. The nil assignment reserves enough capacity for all workers. We
+  ---assign them in the first call to `race_and_refill()` below.
+  ---@type (OrgPromise<integer>|false)[]
+  local workers = { [num_workers] = nil }
+
+  ---Fill the worker pool with the given number of workers. If no number is
+  ---passed, refill it so all finished workers are replaced.
+  ---@return OrgPromise<nil>
+  local function race_and_refill()
+    local work_left = true
+    for i = 1, num_workers do
+      -- Finished workers replace themselves with `false`.
+      if not workers[i] then
+        -- Create the next worker. If successful, ensure that it unregisters
+        -- itself after finishing. If unsuccessful, it means we've exhausted
+        -- the inputs, and more iteration is pointless.
+        local worker = step()
+        if not worker then
+          work_left = false
+          break
+        end
+        workers[i] = worker:next(function()
+          workers[i] = false
+          return false
+        end)
+      end
+    end
+    if work_left then
+      -- Wait for the next worker to finish and then recursively reschedule
+      -- yourself.
+      return Promise.race(workers):next(race_and_refill)
+    else
+      -- No further work can be scheduled; simply wait for the remaining
+      -- workers.
+      return Promise.all(workers)
+    end
+  end
+
+  -- Run the worker pool and return the result when it's finished.
+  return race_and_refill():next(function() return outputs end)
 end
 
 ---@param force? boolean Force reload all files

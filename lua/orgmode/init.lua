@@ -49,10 +49,11 @@ function Org:init()
   self.highlighter = require('orgmode.colors.highlighter'):new()
   require('orgmode.colors.highlights').define_highlights()
   self.files = require('orgmode.files')
-    :new({
-      paths = require('orgmode.config').org_agenda_files,
-    })
-    :load_sync(true, 20000)
+      :new({
+        paths = require('orgmode.config').org_agenda_files,
+        _experimental_org_files_throttle = require('orgmode.config')._experimental_org_files_throttle,
+      })
+      :load_sync(true, 20000)
   self.links = require('orgmode.org.links'):new({ files = self.files })
   self.agenda = require('orgmode.agenda'):new({
     files = self.files,

@@ -2,6 +2,7 @@
 ---@field org_id_method 'uuid' | 'ts' | 'org'
 ---@field org_agenda_span 'day' | 'week' | 'month' | 'year' | number
 ---@field org_log_repeat 'time' | 'note' | false
+---@field _experimental_org_files_throttle? integer
 ---@field calendar { round_min_with_hours: boolean, min_big_step: number, min_small_step: number? }
 local DefaultConfig = {
   org_agenda_files = '',
